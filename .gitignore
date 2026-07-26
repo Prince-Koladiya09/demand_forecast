@@ -8,15 +8,18 @@ __pycache__/
 dist/
 build/
 
-# Virtual Environment - CRITICAL
+# Virtual Environment
 venv/
 env/
 ENV/
 .venv/
 
-# Jupyter
+# Jupyter Notebooks - Exclude outputs but keep notebooks
 .ipynb_checkpoints/
 *.ipynb
+
+# Actually, we WANT to track notebooks, but clean them first
+# We'll track notebooks/ but not their outputs
 
 # Data - ALL data files
 data/
@@ -25,9 +28,14 @@ data/
 *.h5
 *.parquet
 
-# Reports
+# Reports - Exclude generated figures but keep the folder structure
 reports/figures/
-reports/experiment_log.csv
+reports/*.csv
+reports/*.html
+reports/*.pdf
+
+# BUT keep the reports folder itself
+!reports/.gitkeep
 
 # OS
 .DS_Store
