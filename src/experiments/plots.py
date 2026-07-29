@@ -110,6 +110,63 @@ def plot_segment_results(segment_df, save_dir=None):
     return fig
 
 
+def plot_uncertainty_decomposition(summary, save_dir=None):
+    """
+    Stacked/side-by-side view of epistemic vs. aleatoric uncertainty across
+    the forecast horizon (t+1 ... t+output_window).
+    """
+    epistemic = summary["epistemic_by_horizon"]
+    aleatoric = summary["aleatoric_by_horizon"]
+    horizons = np.arange(1, len(epistemic) + 1)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    width = 0.35
+    ax.bar(horizons - width / 2, epistemic, width, label="Epistemic (model) uncertainty", color="tab:blue")
+    ax.bar(horizons + width / 2, aleatoric, width, label="Aleatoric (data) uncertainty", color="tab:orange")
+    ax.set_xlabel("Forecast horizon (t+h)")
+    ax.set_ylabel("Uncertainty magnitude")
+    ax.set_title("Uncertainty Decomposition by Forecast Horizon\n(MC Dropout epistemic vs. quantile-spread aleatoric)")
+    ax.set_xticks(horizons)
+    ax.legend()
+    plt.tight_layout()
+    _save(fig, "uncertainty_decomposition", save_dir=save_dir)
+    return fig
+
+
+def plot_regime_pruning_comparison(summary_df, save_dir=None):
+    """Bar chart comparing pinball loss with vs. without structural-break-based regime pruning."""
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    sns.barplot(data=summary_df, x="tag", y="pinball_loss", hue="tag", legend=False, ax=ax, palette="viridis")
+    ax.set_title("Effect of Regime Pruning (Structural Break Detection) on Pinball Loss")
+    ax.set_xlabel("")
+    plt.tight_layout()
+    _save(fig, "regime_pruning_comparison", save_dir=save_dir)
+    return fig
+
+
+def plot_reconciliation_comparison(top_raw, top_independent, top_reconciled, save_dir=None):
+    """
+    Line plot comparing the naive bottom-up sum, the independently-modeled
+    top-level forecast, and the reconciled result across the forecast
+    horizon -- shows reconciliation pulling the two disagreeing sources
+    toward a single consistent number.
+    """
+    horizons = np.arange(1, len(top_raw) + 1)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.plot(horizons, top_raw, marker="o", label="Raw bottom-up sum", color="tab:blue")
+    ax.plot(horizons, top_independent, marker="s", label="Independent top-level forecast", color="tab:orange")
+    ax.plot(horizons, top_reconciled, marker="^", label="Reconciled", color="tab:green", linewidth=2.5)
+    ax.set_xlabel("Forecast horizon (t+h)")
+    ax.set_ylabel("Total demand")
+    ax.set_title("Hierarchical Reconciliation: Before vs. After")
+    ax.set_xticks(horizons)
+    ax.legend()
+    plt.tight_layout()
+    _save(fig, "reconciliation_comparison", save_dir=save_dir)
+    return fig
+
+
 def plot_experiment_log_overview(log_df, metric="pinball_loss", top_n=15, save_dir=None):
     """
     Bar chart ranking ALL logged runs (across every run_type) by a chosen

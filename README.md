@@ -30,17 +30,23 @@ demand_forecasting_project/
 │   │   └── m5_loader.py           # Melts M5 wide format -> standard schema
 │   ├── experiments/
 │   │   ├── common.py              # Shared train_and_evaluate() used by all experiment scripts below
+│   │   ├── plots.py               # Shared plotting functions for all experiment scripts
 │   │   ├── hyperparam_search.py   # Compares hidden_size x input_window configs
 │   │   ├── ablation_study.py      # Compares target-only vs. target+extra-features
 │   │   ├── rolling_cv.py          # Rolling-origin (walk-forward) cross-validation
-│   │   └── segment_analysis.py    # Breaks down results by per-SKU demand volume tier
+│   │   ├── segment_analysis.py    # Breaks down results by per-SKU demand volume tier
+│   │   └── advanced_analysis.py   # Ties together uncertainty decomposition, structural
+│   │                               # break detection, and hierarchical reconciliation (see below)
 │   ├── experiment_log.py          # Appends every run's metrics to reports/experiment_log.csv
 │   ├── preprocessing.py           # FR-1: load, clean, window, chronological split, cache to data/processed/
 │   ├── baseline_sarima.py         # FR-2: SARIMA baseline + ADF stationarity check
-│   ├── dl_model.py                # FR-3: LSTM quantile regression model (pinball loss)
+│   ├── dl_model.py                # FR-3: LSTM quantile regression model (pinball loss, dropout for MC Dropout)
 │   ├── calibration.py             # FR-4: coverage, PIT, calibration plots
 │   ├── statistical_tests.py       # FR-5: Diebold-Mariano test, Ljung-Box test
 │   ├── decision_newsvendor.py     # FR-6: critical ratio, order-up-to level, cost simulation
+│   ├── uncertainty_decomposition.py    # Epistemic vs. aleatoric uncertainty via MC Dropout
+│   ├── structural_break_detection.py   # CUSUM-based regime shift detection + pruning
+│   ├── hierarchical_reconciliation.py  # Structural-scaling (MinT-style) forecast reconciliation
 │   └── pipeline.py                # Orchestrates the full pipeline end-to-end
 │
 ├── notebooks/
@@ -234,6 +240,46 @@ worse on low-volume, intermittent SKUs than on high-volume ones, which the
 blended average alone would hide. Saves a comparison chart to
 `reports/figures/segment_analysis_comparison.png`.
 
+### Advanced analysis (uncertainty, structural breaks, reconciliation)
+```bash
+python -m src.experiments.advanced_analysis --dataset rossmann
+```
+Trains one model, then runs three deeper analyses on top of it:
+
+**1. Uncertainty decomposition** (`src/uncertainty_decomposition.py`) — splits
+total predictive uncertainty into **epistemic** (model uncertainty, reducible
+with more data) and **aleatoric** (inherent demand noise, not reducible) via
+Monte Carlo Dropout: dropout is normally OFF at inference, MC Dropout keeps
+it ON and runs ~20 stochastic forward passes per input, using the spread
+across passes as an epistemic-uncertainty estimate, and the model's own
+predicted quantile spread (P90−P10) as an aleatoric-uncertainty proxy. This
+is a well-established but *approximate* technique (Gal & Ghahramani, 2016),
+not a full Bayesian treatment — stated explicitly in the module docstring.
+Reveals whether forecast uncertainty is mostly "the model hasn't seen enough
+examples" vs. "this demand is just inherently noisy," which call for
+different responses. Saves `reports/figures/uncertainty_decomposition.png`.
+
+**2. Structural break detection** (`src/structural_break_detection.py`) —
+runs two-sided CUSUM (cumulative sum) control-chart detection per SKU to
+find sustained regime shifts (e.g. a competitor opening, a permanent promo
+change). CUSUM parameters were empirically tuned (see module docstring) to
+give zero false positives on pure-noise series while detecting an injected
+shift with near-zero delay. If a break is found, retrains the model with
+pre-break data pruned and compares pinball loss against the unpruned model,
+reporting whether the older regime was adding noise or useful signal. Saves
+`reports/figures/regime_pruning_comparison.png` (only if at least one break
+was detected).
+
+**3. Hierarchical reconciliation** (`src/hierarchical_reconciliation.py`) —
+takes each SKU's latest forecast plus an **independently fit** SARIMA model
+on the aggregated total demand (a genuinely separate model, not just a sum),
+then reconciles the two so they agree exactly. Implements the standard
+hierarchical reconciliation formula directly in numpy using a "structural
+scaling" (diagonal-weight) simplification of full MinT reconciliation —
+*note: there is no `statsmodels.tsa.forecasting.reconciliation` module, so
+this is implemented from the formula directly rather than depending on an
+API that doesn't exist*. Saves `reports/figures/reconciliation_comparison.png`.
+
 ### Reviewing results
 ```python
 from src.experiment_log import load_experiment_log
@@ -250,12 +296,21 @@ additional cross-experiment chart ranking all logged runs together.
 
 - **One baseline (SARIMA), one DL model (LSTM).** No ensembles, no transformers — added
   complexity would not add scientific value here.
-- **Quantile regression instead of a full Bayesian/MC-Dropout model.** Simpler to implement
-  correctly, faster to train, and its output (quantiles) plugs directly into the newsvendor
-  formula with no extra distributional assumptions.
+- **Quantile regression is the primary uncertainty method, not a full Bayesian model.**
+  Simpler to implement correctly, faster to train, and its output (quantiles) plugs
+  directly into the newsvendor formula with no extra distributional assumptions. MC
+  Dropout is used *in addition*, specifically in `src/uncertainty_decomposition.py`, to
+  answer a different question (epistemic vs. aleatoric uncertainty) that quantile
+  regression alone can't answer — it's an addition for a specific diagnostic purpose,
+  not a replacement for the main approach.
 - **Every statistical test used (ADF, Diebold-Mariano, Ljung-Box) is a standard, well-implemented
   test in `statsmodels`/`scipy`.** No custom statistics were derived — the value is in choosing
   the *correct* test for each specific claim, not in reinventing one.
+- **Hierarchical reconciliation uses a simplified "structural scaling" weight matrix,
+  not full MinT covariance estimation.** Full MinT needs substantial in-sample residual
+  history to estimate a full covariance matrix reliably; the diagonal approximation used
+  here is less statistically optimal but far more stable at this project's data scale,
+  while still guaranteeing the actual business requirement (forecasts sum consistently).
 
 See `docs/SRS.md`, Section 10, for the full reasoning behind each design decision.
 
@@ -268,3 +323,6 @@ If you're reviewing this project (e.g., as an interviewer), read in this order:
 2. `src/dl_model.py` — the core model and pinball loss implementation
 3. `src/statistical_tests.py` — DM test and Ljung-Box, with inline comments on *why* each is used
 4. `src/decision_newsvendor.py` — how the forecast becomes a business decision
+5. `src/uncertainty_decomposition.py`, `src/structural_break_detection.py`,
+   `src/hierarchical_reconciliation.py` — the three advanced analyses, each with an
+   explicit statement of what method/approximation is used and why

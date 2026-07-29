@@ -20,10 +20,21 @@ QUANTILES = [0.1, 0.5, 0.9]
 
 
 class QuantileLSTM(nn.Module):
-    def __init__(self, input_size=1, hidden_size=64, num_layers=1, output_window=7, quantiles=QUANTILES):
+    def __init__(self, input_size=1, hidden_size=64, num_layers=1, output_window=7,
+                 quantiles=QUANTILES, dropout=0.2):
+        """
+        dropout: applied to the LSTM's final hidden state before the quantile
+        heads. Kept even at inference time when running Monte Carlo Dropout
+        (see src/uncertainty_decomposition.py) -- this is what lets a single
+        deterministic-looking model produce a spread of predictions used to
+        estimate epistemic (model) uncertainty. Standard training/prediction
+        (dl_model.predict()) uses model.eval(), which disables dropout as
+        usual -- only the MC Dropout module deliberately re-enables it.
+        """
         super().__init__()
         self.quantiles = quantiles
         self.output_window = output_window
+        self.dropout_p = dropout
 
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -31,6 +42,7 @@ class QuantileLSTM(nn.Module):
             num_layers=num_layers,
             batch_first=True,
         )
+        self.dropout = nn.Dropout(dropout)
         # One linear head per quantile, each predicting the full output window
         self.heads = nn.ModuleList([
             nn.Linear(hidden_size, output_window) for _ in quantiles
@@ -42,7 +54,7 @@ class QuantileLSTM(nn.Module):
         returns: (batch, num_quantiles, output_window)
         """
         _, (h_n, _) = self.lstm(x)
-        last_hidden = h_n[-1]  # (batch, hidden_size)
+        last_hidden = self.dropout(h_n[-1])  # (batch, hidden_size)
         outputs = [head(last_hidden) for head in self.heads]  # each (batch, output_window)
         return torch.stack(outputs, dim=1)  # (batch, num_quantiles, output_window)
 

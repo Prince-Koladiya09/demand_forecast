@@ -17,6 +17,9 @@ from src import baseline_sarima
 from src.experiment_log import log_experiment, load_experiment_log
 from src.experiments.rolling_cv import rolling_origin_split
 from src.experiments.segment_analysis import assign_volume_buckets
+from src.uncertainty_decomposition import mc_dropout_predict, summarize_by_horizon
+from src.structural_break_detection import cusum_break_detection, detect_breaks_per_sku, apply_regime_pruning
+from src.hierarchical_reconciliation import reconcile_forecasts, reconcile_forecast_matrix
 
 
 def test_quantile_lstm_forward_shape():
@@ -115,3 +118,69 @@ def test_assign_volume_buckets_creates_three_tiers():
     buckets = assign_volume_buckets(df, n_buckets=3)
     assert buckets["low_sku"] == "low"
     assert buckets["high_sku"] == "high"
+
+
+def test_mc_dropout_predict_shapes():
+    batch_size, input_window, output_window = 10, 28, 7
+    dummy_X = np.random.randn(batch_size, input_window, 1).astype(np.float32)
+    model = dl_model.QuantileLSTM(output_window=output_window, dropout=0.3)
+
+    mean_preds, epistemic_std, aleatoric_spread = mc_dropout_predict(model, dummy_X, n_passes=5)
+    assert mean_preds.shape == (batch_size, 3, output_window)
+    assert epistemic_std.shape == (batch_size, output_window)
+    assert aleatoric_spread.shape == (batch_size, output_window)
+    assert np.all(aleatoric_spread >= 0)  # a spread can never be negative
+
+    summary = summarize_by_horizon(epistemic_std, aleatoric_spread)
+    assert summary["epistemic_by_horizon"].shape == (output_window,)
+    assert summary["aleatoric_by_horizon"].shape == (output_window,)
+
+
+def test_cusum_detects_injected_break_with_no_false_positive():
+    rng = np.random.default_rng(0)
+    before = rng.normal(20, 3, 100)
+    after = rng.normal(50, 3, 100)
+    series_with_break = np.concatenate([before, after])
+    break_idx = cusum_break_detection(series_with_break)
+    assert break_idx is not None
+    assert abs(break_idx - 100) <= 5  # near the true break at index 100
+
+    stationary_series = rng.normal(20, 3, 200)
+    assert cusum_break_detection(stationary_series) is None  # no false positive on pure noise
+
+
+def test_regime_pruning_removes_only_pre_break_rows():
+    import pandas as pd
+    dates = pd.date_range("2021-01-01", periods=200, freq="D")
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({
+        "date": dates,
+        "sku_id": "A",
+        "units_sold": np.concatenate([rng.normal(20, 3, 100), rng.normal(50, 3, 100)]),
+    })
+    breaks = detect_breaks_per_sku(df, sku_col="sku_id", date_col="date", target_col="units_sold")
+    pruned = apply_regime_pruning(df, sku_col="sku_id", date_col="date", breaks=breaks)
+    assert len(pruned) < len(df)
+    assert pruned["units_sold"].mean() > df["units_sold"].mean()  # pruned data should skew toward the post-break (higher) regime
+
+
+def test_reconcile_forecasts_sums_consistently():
+    bottom_forecasts = np.array([20.0, 35.0, 15.0, 28.0])
+    bottom_variances = np.array([4.0, 9.0, 2.0, 6.0])
+
+    result = reconcile_forecasts(bottom_forecasts, bottom_variances, top_forecast=110.0, top_variance=5.0)
+    assert np.isclose(result["bottom_reconciled"].sum(), result["top_reconciled"])
+    # reconciled top should move toward the confident independent top forecast (110), away from the raw sum (98)
+    assert result["top_raw"] < result["top_reconciled"] < 110.0 + 1e-6
+
+
+def test_reconcile_forecast_matrix_shapes():
+    forecast_matrix = np.array([[20.0, 21.0], [35.0, 34.0], [15.0, 16.0]])
+    bottom_variances = np.array([4.0, 9.0, 2.0])
+    top_series = np.array([80.0, 78.0])
+
+    result = reconcile_forecast_matrix(forecast_matrix, bottom_variances, top_forecast_series=top_series)
+    assert result["bottom_reconciled"].shape == forecast_matrix.shape
+    assert result["top_reconciled"].shape == (2,)
+    for h in range(2):
+        assert np.isclose(result["bottom_reconciled"][:, h].sum(), result["top_reconciled"][h])
