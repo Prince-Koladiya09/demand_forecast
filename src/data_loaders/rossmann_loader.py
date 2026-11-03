@@ -38,7 +38,7 @@ RAW_STORE_PATH = Path("data/raw/store.csv")
 
 # Extra numeric feature columns this loader produces, for use as additional
 # input channels in src/preprocessing.py's make_windows(feature_cols=...).
-FEATURE_COLS = ["promo", "competition_distance", "promo2", "store_type_code", "assortment_code"]
+FEATURE_COLS = ["promo", "competition_distance", "promo2", "store_type_code", "assortment_code","is_open"]
 
 
 def load_rossmann(
@@ -56,7 +56,7 @@ def load_rossmann(
     df = pd.read_csv(train_path, parse_dates=["Date"], low_memory=False)
 
     # Drop days the store was closed -- these are not informative zero-demand days
-    df = df[df["Open"] == 1].copy()
+    df["is_open"] = df["Open"].fillna(1).astype(int)
 
     df = df.rename(columns={
         "Date": "date",
@@ -87,10 +87,40 @@ def load_rossmann(
 
     df = df.merge(store_features, on="sku_id", how="left")
 
-    df = df[["date", "sku_id", "units_sold", "day_of_week", "promo"] + FEATURE_COLS[1:]]
+    df = df[["date", "sku_id", "units_sold", "day_of_week", "promo","is_open"] + FEATURE_COLS[1:]]
     df = df.sort_values(["sku_id", "date"]).reset_index(drop=True)
 
-    # Drop stores with too little history to build meaningful windows
+       
+    active = (
+        long_df["sell_price"].notna()
+        | (long_df["units_sold"].fillna(0) > 0)
+    )
+
+    first_active = (
+        long_df.loc[active]
+        .groupby("sku_id")["date"]
+        .min()
+    )
+
+    long_df = long_df.join(
+        first_active.rename("_first_active"),
+        on="sku_id"
+    )
+
+    long_df = long_df[
+        long_df["_first_active"].isna()
+        | (
+            long_df["date"]
+            >= long_df["_first_active"]
+        )
+    ]
+
+    long_df = (
+        long_df.drop(columns="_first_active")
+        .reset_index(drop=True)
+    )
+
+        # Drop stores with too little history to build meaningful windows
     counts = df.groupby("sku_id")["date"].count()
     valid_stores = counts[counts >= min_history_days].index
     df = df[df["sku_id"].isin(valid_stores)].reset_index(drop=True)
