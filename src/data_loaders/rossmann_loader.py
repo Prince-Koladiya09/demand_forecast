@@ -1,44 +1,35 @@
+
 """
 data_loaders/rossmann_loader.py
---------------------------------
-Converts the raw Rossmann Store Sales files into the standard long format
-expected by src/preprocessing.py:
 
-    date, sku_id, units_sold, day_of_week, promo, competition_distance,
-    promo2, store_type_code, assortment_code
+Converts raw Rossmann Store Sales files into long format.
 
-Download from Kaggle: https://www.kaggle.com/c/rossmann-store-sales
-Place `train.csv` AND `store.csv` in data/raw/.
+Required files in data/raw/:
+    - train.csv
+    - store.csv
 
-Key adaptation decisions (worth knowing for an interview):
-- "Store" is treated as the SKU/series id, since Rossmann is store-level,
-  not item-level, demand.
-- Rows where Open == 0 (store closed) are DROPPED rather than treated as
-  zero-demand days. A closed store isn't "zero demand" in the same sense
-  as an open store selling nothing -- keeping them in would bias the
-  model into thinking closures are a demand pattern to predict.
-- store.csv adds store-level context (StoreType, Assortment,
-  CompetitionDistance, Promo2) that plain historical sales can't capture
-  on their own -- e.g. two stores with similar past sales can diverge
-  once a competitor opens nearby. These are merged in as extra numeric
-  input channels for the DL model (see FEATURE_COLS below), not just
-  carried along unused.
-- StoreType and Assortment are categorical (a/b/c/d letters in the raw
-  data) and are label-encoded here into integers so they can be used as
-  numeric model inputs. This is a deliberately simple encoding (not
-  one-hot) to keep the model input size small -- reasonable given there
-  are only a handful of categories.
+Output columns:
+    date, sku_id, units_sold, day_of_week, promo,
+    competition_distance, promo2, store_type_code,
+    assortment_code, is_open
 """
 
-import pandas as pd
 from pathlib import Path
+
+import pandas as pd
+
 
 RAW_TRAIN_PATH = Path("data/raw/train.csv")
 RAW_STORE_PATH = Path("data/raw/store.csv")
 
-# Extra numeric feature columns this loader produces, for use as additional
-# input channels in src/preprocessing.py's make_windows(feature_cols=...).
-FEATURE_COLS = ["promo", "competition_distance", "promo2", "store_type_code", "assortment_code","is_open"]
+FEATURE_COLS = [
+    "promo",
+    "competition_distance",
+    "promo2",
+    "store_type_code",
+    "assortment_code",
+    "is_open",
+]
 
 
 def load_rossmann(
@@ -47,89 +38,178 @@ def load_rossmann(
     min_history_days: int = 100,
 ) -> pd.DataFrame:
     """
-    Returns a DataFrame with columns:
+    Return a DataFrame with:
         date, sku_id, units_sold, day_of_week, promo,
-        competition_distance, promo2, store_type_code, assortment_code
-    matching the schema expected by src/preprocessing.py
-    (DATE_COL="date", SKU_COL="sku_id", TARGET_COL="units_sold").
+        competition_distance, promo2, store_type_code,
+        assortment_code, is_open
+
+    Store is treated as the time-series identifier.
     """
-    df = pd.read_csv(train_path, parse_dates=["Date"], low_memory=False)
 
-    # Drop days the store was closed -- these are not informative zero-demand days
-    df["is_open"] = df["Open"].fillna(1).astype(int)
-
-    df = df.rename(columns={
-        "Date": "date",
-        "Store": "sku_id",
-        "Sales": "units_sold",
-        "DayOfWeek": "day_of_week",
-        "Promo": "promo",
-    })
-
-    # --- Merge store-level metadata ---
-    store_df = pd.read_csv(store_path)
-    store_df = store_df.rename(columns={"Store": "sku_id"})
-
-    # Label-encode categorical columns into small integer codes
-    store_df["store_type_code"] = store_df["StoreType"].astype("category").cat.codes
-    store_df["assortment_code"] = store_df["Assortment"].astype("category").cat.codes
-
-    # CompetitionDistance can be missing (no competitor reported) -- fill
-    # with the max observed distance, treating "unknown" as "far away"
-    # rather than 0 (which would wrongly mean "competitor next door").
-    max_dist = store_df["CompetitionDistance"].max()
-    store_df["competition_distance"] = store_df["CompetitionDistance"].fillna(max_dist)
-
-    # Promo2 (0/1): whether the store runs recurring promotions
-    store_df["promo2"] = store_df["Promo2"].fillna(0)
-
-    store_features = store_df[["sku_id", "competition_distance", "promo2", "store_type_code", "assortment_code"]]
-
-    df = df.merge(store_features, on="sku_id", how="left")
-
-    df = df[["date", "sku_id", "units_sold", "day_of_week", "promo","is_open"] + FEATURE_COLS[1:]]
-    df = df.sort_values(["sku_id", "date"]).reset_index(drop=True)
-
-       
-    active = (
-        long_df["sell_price"].notna()
-        | (long_df["units_sold"].fillna(0) > 0)
+    # Load training data.
+    df = pd.read_csv(
+        train_path,
+        parse_dates=["Date"],
+        low_memory=False,
     )
 
-    first_active = (
-        long_df.loc[active]
-        .groupby("sku_id")["date"]
-        .min()
-    )
+    required_train = {
+        "Date",
+        "Store",
+        "Sales",
+        "DayOfWeek",
+        "Promo",
+        "Open",
+    }
 
-    long_df = long_df.join(
-        first_active.rename("_first_active"),
-        on="sku_id"
-    )
-
-    long_df = long_df[
-        long_df["_first_active"].isna()
-        | (
-            long_df["date"]
-            >= long_df["_first_active"]
+    if not required_train.issubset(df.columns):
+        raise ValueError(
+            f"Rossmann train file is missing columns: "
+            f"{required_train - set(df.columns)}"
         )
+
+    # Preserve the original open/closed indicator.
+    df["is_open"] = pd.to_numeric(
+        df["Open"],
+        errors="coerce",
+    ).fillna(1).astype(int)
+
+    # Rename columns to the common project schema.
+    df = df.rename(
+        columns={
+            "Date": "date",
+            "Store": "sku_id",
+            "Sales": "units_sold",
+            "DayOfWeek": "day_of_week",
+            "Promo": "promo",
+        }
+    )
+
+    # Convert numeric fields.
+    df["units_sold"] = pd.to_numeric(
+        df["units_sold"],
+        errors="coerce",
+    )
+
+    df["promo"] = pd.to_numeric(
+        df["promo"],
+        errors="coerce",
+    ).fillna(0)
+
+    df["day_of_week"] = pd.to_numeric(
+        df["day_of_week"],
+        errors="coerce",
+    )
+
+    # Closed days are excluded from the demand training data.
+    df = df[df["is_open"] == 1].copy()
+
+    # Remove rows with missing sales or dates.
+    df = df.dropna(
+        subset=["date", "sku_id", "units_sold"]
+    ).copy()
+
+    # Load store metadata.
+    store_df = pd.read_csv(store_path)
+
+    required_store = {
+        "Store",
+        "StoreType",
+        "Assortment",
+        "CompetitionDistance",
+        "Promo2",
+    }
+
+    if not required_store.issubset(store_df.columns):
+        raise ValueError(
+            f"Rossmann store file is missing columns: "
+            f"{required_store - set(store_df.columns)}"
+        )
+
+    store_df = store_df.rename(
+        columns={"Store": "sku_id"}
+    )
+
+    # Encode categorical store features.
+    store_df["store_type_code"] = (
+        store_df["StoreType"].astype("category").cat.codes
+    )
+
+    store_df["assortment_code"] = (
+        store_df["Assortment"].astype("category").cat.codes
+    )
+
+    # Fill missing competition distance with maximum observed distance.
+    store_df["CompetitionDistance"] = pd.to_numeric(
+        store_df["CompetitionDistance"],
+        errors="coerce",
+    )
+
+    max_dist = store_df["CompetitionDistance"].max()
+
+    if pd.isna(max_dist):
+        max_dist = 0
+
+    store_df["competition_distance"] = (
+        store_df["CompetitionDistance"].fillna(max_dist)
+    )
+
+    # Promo2 is a store-level indicator.
+    store_df["promo2"] = pd.to_numeric(
+        store_df["Promo2"],
+        errors="coerce",
+    ).fillna(0)
+
+    store_features = store_df[
+        [
+            "sku_id",
+            "competition_distance",
+            "promo2",
+            "store_type_code",
+            "assortment_code",
+        ]
     ]
 
-    long_df = (
-        long_df.drop(columns="_first_active")
-        .reset_index(drop=True)
+    # Merge store-level features.
+    df = df.merge(
+        store_features,
+        on="sku_id",
+        how="left",
+        validate="many_to_one",
     )
 
-        # Drop stores with too little history to build meaningful windows
-    counts = df.groupby("sku_id")["date"].count()
-    valid_stores = counts[counts >= min_history_days].index
-    df = df[df["sku_id"].isin(valid_stores)].reset_index(drop=True)
+    # Drop stores with insufficient history.
+    counts = df.groupby("sku_id")["date"].nunique()
+
+    valid_stores = counts[
+        counts >= min_history_days
+    ].index
+
+    df = df[
+        df["sku_id"].isin(valid_stores)
+    ].copy()
+
+    # Final output columns.
+    output_cols = [
+        "date",
+        "sku_id",
+        "units_sold",
+        "day_of_week",
+        *FEATURE_COLS,
+    ]
+
+    df = df[output_cols]
+
+    df = df.sort_values(
+        ["sku_id", "date"]
+    ).reset_index(drop=True)
 
     return df
 
 
 if __name__ == "__main__":
     df = load_rossmann()
+
     print(df.head())
     print("\nStores kept:", df["sku_id"].nunique())
     print("Date range:", df["date"].min(), "to", df["date"].max())
