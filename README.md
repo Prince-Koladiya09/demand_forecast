@@ -1,328 +1,873 @@
+
 # Probabilistic Demand Forecasting with Uncertainty-Aware Inventory Decisions
 
-An applied-science project demonstrating deep learning, probability/statistics, and
-decision-making under uncertainty — built for demand forecasting.
+### Version 2.0 | Deep Learning | Statistical Forecasting | Inventory Optimization
 
-Instead of predicting a single number ("50 units next week"), this project predicts a
-**distribution** over demand (via quantile regression) and uses that distribution to make
-a real inventory decision (via the newsvendor model), while statistically validating every
-claim of improvement along the way.
+An applied machine learning and operations research project that combines probabilistic demand forecasting, statistical evaluation, uncertainty quantification, and inventory optimization.
 
-Full requirements and design rationale: [`docs/SRS.md`](docs/SRS.md)
+The objective is not simply to predict future demand. It is to understand demand uncertainty and convert forecasts into better inventory decisions.
+
+Instead of predicting a single value (e.g., 50 units next week), the system predicts multiple demand quantiles (P10, P50, P90) using quantile regression and uses these predictions to calculate inventory decisions through the Newsvendor model.
+
+Version 2 extends the original implementation with improved preprocessing, monotonic quantile predictions, statistical evaluation utilities, conformal calibration, and multi-period inventory simulation.
+
+Full requirements and design rationale: `docs/SRS.md`
 
 ---
 
-## Project Structure
+# 1. Project Objectives
 
+The project addresses five main objectives:
+
+1. Build reliable demand forecasting models using historical sales data.
+2. Predict demand distributions rather than only point forecasts.
+3. Measure predictive uncertainty and interval calibration.
+4. Statistically evaluate forecasting performance against baseline models.
+5. Convert probabilistic forecasts into inventory ordering decisions and evaluate their financial impact.
+
+## Main Technologies
+
+| Technology | Purpose |
+|---|---|
+| Python | Main programming language |
+| PyTorch | Quantile LSTM |
+| NumPy | Numerical computation |
+| Pandas | Data processing |
+| SciPy | Statistical testing |
+| Statsmodels | SARIMA, ETS and diagnostics |
+| Scikit-learn | Preprocessing and evaluation |
+| Matplotlib / Seaborn | Visualizations |
+| Pytest | Automated testing |
+| GitHub Actions | Continuous integration |
+
+---
+
+# 2. Datasets
+
+The project supports two demand forecasting datasets.
+
+## 2.1 Rossmann Store Sales
+
+Dataset: [Kaggle – Rossmann Store Sales](https://www.kaggle.com/competitions/rossmann-store-sales/data)
+
+Required files:
+
+- `train.csv`
+- `store.csv`
+
+Important features:
+
+- Historical store sales
+- Promotions
+- Store type
+- Assortment
+- Competition distance
+- Calendar information
+- Store operating status
+
+The Rossmann loader merges store metadata with historical sales and prepares the data in a common forecasting schema.
+
+## 2.2 M5 Forecasting Accuracy
+
+Dataset: [Kaggle – M5 Forecasting Accuracy](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data)
+
+Required files:
+
+- `sales_train_validation.csv`
+- `calendar.csv`
+- `sell_prices.csv`
+
+Important features:
+
+- Historical item sales
+- Store identifiers
+- Item identifiers
+- Selling prices
+- Calendar information
+- Weekly price information
+
+The M5 loader converts wide-format sales data into long-format time-series data and merges calendar and selling-price information.
+
+## 2.3 Dataset Directory
+
+Place downloaded datasets in:
+
+```text
+data/
+├── raw/
+│   ├── train.csv
+│   ├── store.csv
+│   ├── sales_train_validation.csv
+│   ├── calendar.csv
+│   └── sell_prices.csv
+│
+└── processed/
 ```
+
+Use the files relevant to the selected dataset.
+
+Do not commit large raw datasets to GitHub unless explicitly required.
+
+---
+
+# 3. Updated Project Structure
+
+```text
 demand_forecasting_project/
 │
-├── docs/
-│   └── SRS.md                     # Full software requirements specification
+├── .github/
+│   └── workflows/
+│       └── tests.yml
+│
+├── configs/
+│   └── default.yaml
 │
 ├── data/
-│   ├── raw/                       # Place raw dataset here (e.g., M5 or Rossmann CSVs)
-│   └── processed/                 # Cached cleaned/windowed data (see "Processed Data" below)
+│   ├── raw/
+│   └── processed/
 │
-├── src/
-│   ├── data_loaders/
-│   │   ├── rossmann_loader.py     # Converts raw Rossmann CSV -> standard schema
-│   │   └── m5_loader.py           # Melts M5 wide format -> standard schema
-│   ├── experiments/
-│   │   ├── common.py              # Shared train_and_evaluate() used by all experiment scripts below
-│   │   ├── plots.py               # Shared plotting functions for all experiment scripts
-│   │   ├── hyperparam_search.py   # Compares hidden_size x input_window configs
-│   │   ├── ablation_study.py      # Compares target-only vs. target+extra-features
-│   │   ├── rolling_cv.py          # Rolling-origin (walk-forward) cross-validation
-│   │   ├── segment_analysis.py    # Breaks down results by per-SKU demand volume tier
-│   │   └── advanced_analysis.py   # Ties together uncertainty decomposition, structural
-│   │                               # break detection, and hierarchical reconciliation (see below)
-│   ├── experiment_log.py          # Appends every run's metrics to reports/experiment_log.csv
-│   ├── preprocessing.py           # FR-1: load, clean, window, chronological split, cache to data/processed/
-│   ├── baseline_sarima.py         # FR-2: SARIMA baseline + ADF stationarity check
-│   ├── dl_model.py                # FR-3: LSTM quantile regression model (pinball loss, dropout for MC Dropout)
-│   ├── calibration.py             # FR-4: coverage, PIT, calibration plots
-│   ├── statistical_tests.py       # FR-5: Diebold-Mariano test, Ljung-Box test
-│   ├── decision_newsvendor.py     # FR-6: critical ratio, order-up-to level, cost simulation
-│   ├── uncertainty_decomposition.py    # Epistemic vs. aleatoric uncertainty via MC Dropout
-│   ├── structural_break_detection.py   # CUSUM-based regime shift detection + pruning
-│   ├── hierarchical_reconciliation.py  # Structural-scaling (MinT-style) forecast reconciliation
-│   └── pipeline.py                # Orchestrates the full pipeline end-to-end
+├── docs/
+│   └── SRS.md
 │
 ├── notebooks/
-│   ├── 00_eda.ipynb                       # Exploratory data analysis (see "EDA" below)
-│   ├── 01_end_to_end_walkthrough.ipynb    # Interactive run of the full pipeline
-│   └── 02_experiment_results.ipynb        # Visualizes results from reports/experiment_log.csv
+│   ├── 00_eda.ipynb
+│   ├── 01_end_to_end_walkthrough.ipynb
+│   └── 02_experiment_results.ipynb
 │
 ├── reports/
-│   └── figures/                   # Calibration plots, forecast plots saved here
+│   ├── figures/
+│   ├── results.md
+│   └── experiment_log.csv
+│
+├── src/
+│   ├── __init__.py
+│   │
+│   ├── data_loaders/
+│   │   ├── __init__.py
+│   │   ├── rossmann_loader.py
+│   │   └── m5_loader.py
+│   │
+│   ├── experiments/
+│   │   ├── __init__.py
+│   │   ├── common.py
+│   │   ├── plots.py
+│   │   ├── hyperparam_search.py
+│   │   ├── ablation_study.py
+│   │   ├── rolling_cv.py
+│   │   ├── segment_analysis.py
+│   │   └── advanced_analysis.py
+│   │
+│   ├── preprocessing.py
+│   ├── baseline_sarima.py
+│   ├── dl_model.py
+│   ├── calibration.py
+│   ├── statistical_tests.py
+│   ├── decision_newsvendor.py
+│   ├── experiment_log.py
+│   ├── pipeline.py
+│   │
+│   ├── metrics.py
+│   ├── advanced_evaluation.py
+│   ├── conformal.py
+│   ├── inventory_simulation.py
+│   │
+│   ├── uncertainty_decomposition.py
+│   ├── structural_break_detection.py
+│   └── hierarchical_reconciliation.py
 │
 ├── tests/
-│   └── test_smoke.py              # Basic smoke tests to check each module imports/runs
+│   ├── test_smoke.py
+│   └── test_v2.py
 │
 ├── requirements.txt
-└── README.md
+├── pytest.ini
+├── README.md
+└── .gitignore
 ```
+
+The structure retains the original project modules and adds the v2 functionality. Existing notebooks, documentation and figures should be preserved.
 
 ---
 
-## How to Run
+# 4. Version 2 Improvements
 
-### 1. Set up environment
+## 4.1 Data Preprocessing
+
+Updated functionality:
+
+- Improved Rossmann and M5 data loading.
+- Consistent time-series schema.
+- Chronological data splitting.
+- Training-only feature scaling.
+- Improved missing-value handling.
+- Dataset preprocessing utilities.
+
+Expected value:
+
+- Reduces data leakage.
+- Improves input consistency.
+- Makes model training more reproducible.
+
+## 4.2 Quantile LSTM Improvements
+
+File: `src/dl_model.py`
+
+The LSTM predicts multiple demand quantiles.
+
+Version 2 improvements:
+
+- Monotonic quantile outputs.
+- Quantile crossing prevention.
+- Validation-based early stopping.
+- Best checkpoint restoration.
+- Global random seed support.
+- Configurable model parameters.
+
+Default quantiles:
+
+```python
+QUANTILES = [0.1, 0.5, 0.9]
+```
+
+The model produces:
+
+- P10: Lower demand estimate.
+- P50: Median demand estimate.
+- P90: Upper demand estimate.
+
+Quantile predictions represent different levels of demand uncertainty.
+
+Note: Existing v1 checkpoints should be retrained when using the updated model architecture.
+
+## 4.3 Forecast Evaluation Metrics
+
+File: `src/metrics.py`
+
+Implemented metrics:
+
+- Pinball Loss
+- Scaled Pinball Loss
+- Interval Score
+
+These metrics evaluate both forecast accuracy and the quality of predicted demand intervals.
+
+## 4.4 Forecasting Baselines
+
+Files:
+
+- `src/advanced_evaluation.py`
+- `src/baseline_sarima.py`
+
+Forecasting methods include:
+
+- Seasonal Naive
+- Exponential Smoothing (ETS)
+- SARIMA
+- Quantile LSTM
+- Quantile lag-feature baseline utilities
+
+Baseline comparisons help determine whether the deep learning model provides meaningful improvements over simpler forecasting methods.
+
+## 4.5 Statistical Evaluation
+
+File: `src/statistical_tests.py`
+
+Statistical methods include:
+
+- Diebold-Mariano test
+- Horizon-aware HAC variance estimation
+- Harvey-Leybourne-Newbold correction
+- Ljung-Box residual diagnostic
+- ADF stationarity testing through the SARIMA module
+
+These methods support statistical evaluation of forecasting errors.
+
+For fair comparisons, models should use identical forecast origins, target observations and evaluation periods.
+
+## 4.6 Newsvendor Inventory Optimization
+
+File: `src/decision_newsvendor.py`
+
+The Newsvendor model converts probabilistic forecasts into inventory decisions.
+
+Critical ratio:
+
+```python
+critical_ratio = stockout_cost / (
+    holding_cost + stockout_cost
+)
+```
+
+Version 2 improvements:
+
+- Quantile interpolation.
+- Per-SKU ordering recommendations.
+- Holding cost calculation.
+- Stockout cost calculation.
+- Fill-rate evaluation.
+- Order-level recommendations.
+
+Example:
+
+```python
+from src.decision_newsvendor import recommend_order_level
+
+predictions = {
+    0.1: 10,
+    0.5: 20,
+    0.9: 30
+}
+
+result = recommend_order_level(
+    predictions,
+    holding_cost=1.0,
+    stockout_cost=4.0
+)
+
+print(result)
+```
+
+Expected recommended order level:
+
+```text
+27.5
+```
+
+The critical ratio is 0.80, so the recommendation is interpolated between P50 and P90.
+
+## 4.7 Inventory Simulation
+
+File: `src/inventory_simulation.py`
+
+Version 2 introduces multi-period inventory simulation.
+
+Features:
+
+- Lead-time support.
+- Inventory replenishment.
+- Holding costs.
+- Stockout costs.
+- Fill-rate calculation.
+- Average inventory calculation.
+- Period-level simulation records.
+
+Example:
+
+```python
+from src.inventory_simulation import simulate_order_up_to
+
+result = simulate_order_up_to(
+    demand=[5, 10, 8],
+    forecasts=[8, 12, 10],
+    lead_time=0,
+    holding_cost=1.0,
+    stockout_cost=4.0
+)
+
+print(result["total_cost"])
+print(result["fill_rate"])
+```
+
+This provides a framework for evaluating inventory decisions over multiple periods.
+
+## 4.8 Conformal Prediction Calibration
+
+File: `src/conformal.py`
+
+Version 2 includes split conformalized quantile regression.
+
+Features:
+
+- Calibration residual scores.
+- Quantile interval adjustment.
+- Configurable coverage level.
+- Calibration sample size reporting.
+
+Example:
+
+```python
+from src.conformal import cqr_adjust
+
+result = cqr_adjust(
+    lower=[10, 12, 14],
+    upper=[20, 22, 24],
+    y_cal=[21, 25, 19],
+    alpha=0.2
+)
+
+print(result["adjustment"])
+print(result["lower"])
+print(result["upper"])
+```
+
+Important: Calibration observations must be kept separate from training and final test observations.
+
+---
+
+# 5. Existing Advanced Features
+
+The original project includes three additional research components.
+
+## 5.1 Uncertainty Decomposition
+
+File: `src/uncertainty_decomposition.py`
+
+Uses Monte Carlo Dropout to estimate:
+
+- Epistemic uncertainty: Model uncertainty.
+- Aleatoric uncertainty: Inherent demand variability.
+
+The implementation uses repeated stochastic forward passes and quantile spread as an approximation of uncertainty.
+
+## 5.2 Structural Break Detection
+
+File: `src/structural_break_detection.py`
+
+Uses CUSUM-based change detection to identify potential demand regime shifts.
+
+Main functions:
+
+- `cusum_break_detection`
+- `detect_breaks_per_sku`
+- `apply_regime_pruning`
+
+This helps investigate whether historical demand patterns remain representative of current demand.
+
+## 5.3 Hierarchical Forecast Reconciliation
+
+File: `src/hierarchical_reconciliation.py`
+
+Supports reconciliation between aggregate forecasts and individual series forecasts.
+
+Main functions:
+
+- `reconcile_forecasts`
+- `reconcile_forecast_matrix`
+
+The current implementation uses structural-scaling reconciliation rather than full MinT covariance estimation.
+
+---
+
+# 6. Installation and Environment Setup
+
+## 6.1 Requirements
+
+Recommended:
+
+- Python 3.11 or 3.12
+- Git
+- VS Code
+- Internet connection for dependency installation
+
+## 6.2 Clone the Repository
+
 ```bash
+git clone YOUR_EXISTING_GITHUB_REPOSITORY_URL
+
+cd demand_forecasting_project
+```
+
+## 6.3 Create a Virtual Environment
+
+Windows:
+
+```powershell
 python -m venv venv
-source venv/bin/activate        # on Windows: venv\Scripts\activate
+
+venv\Scripts\activate
+```
+
+Mac/Linux:
+
+```bash
+python3 -m venv venv
+
+source venv/bin/activate
+```
+
+## 6.4 Install Dependencies
+
+```bash
+python -m pip install --upgrade pip
+
 pip install -r requirements.txt
 ```
 
-### 2. Add data
-Loaders are provided for both **Rossmann Store Sales** and **M5 Forecasting (Walmart)** —
-they convert each dataset's raw format into the standard schema
-(`date, sku_id, units_sold`, plus extra feature columns) that the rest of the
-pipeline expects, and now also merge in each dataset's extra metadata/price files
-as real model inputs (not just unused columns).
+## 6.5 Verify Python Imports
 
-**Rossmann — place 2 files in `data/raw/`:**
-- `train.csv` — core daily sales
-- `store.csv` — store metadata (StoreType, Assortment, CompetitionDistance, Promo2)
-
-Both from [Kaggle - Rossmann Store Sales](https://www.kaggle.com/c/rossmann-store-sales).
-Handled by `src/data_loaders/rossmann_loader.py`, which drops closed-store days
-(`Open == 0`), merges `store.csv` on `Store`, label-encodes `StoreType`/`Assortment`,
-and fills missing `CompetitionDistance` with the max observed distance (treating
-"unknown" as "far away" rather than 0). Produces 5 extra feature channels:
-`promo, competition_distance, promo2, store_type_code, assortment_code`.
-
-**M5 — place 3 files in `data/raw/`:**
-- `sales_train_validation.csv` — core daily sales (wide format)
-- `calendar.csv` — maps day IDs to real dates and weekly price IDs
-- `sell_prices.csv` — weekly price per item-store
-
-All three from [Kaggle - M5 Forecasting Accuracy](https://www.kaggle.com/competitions/m5-forecasting-accuracy).
-Handled by `src/data_loaders/m5_loader.py`, which melts M5's wide (one-column-per-day)
-format into long format, merges weekly `sell_price` via `wm_yr_wk`, and subsamples
-series (default: 300) to keep training fast — full history length per series is
-preserved, only the number of series is reduced. Produces 1 extra feature channel:
-`sell_price`.
-
-Files **not** used (and why): `sample_submission.csv` (Kaggle submission template,
-not data), `test.csv` (Rossmann's held-out competition test set, has no ground truth
-to evaluate against), `sales_train_evaluation.csv` (optional extended M5 test window,
-skipped to keep the project simple).
-
-### 3. Run the full pipeline
 ```bash
-python -m src.pipeline --dataset rossmann   # or: --dataset m5
+python -c "import src; print(src.__file__)"
 ```
-The LSTM's input size adjusts automatically to however many feature channels
-the chosen dataset's loader provides (1 target channel + N extra features).
 
-This will:
-1. Preprocess data and create chronological train/val/test splits
-2. Fit the SARIMA baseline (with ADF stationarity check)
-3. Train the LSTM quantile regression model (P10/P50/P90)
-4. Evaluate calibration (coverage) for both models
-5. Run the Diebold-Mariano test (DL vs. baseline) and Ljung-Box test (residual diagnostics)
-6. Compute the newsvendor-optimal stock level and simulate total cost
-7. Save all plots to `reports/figures/` and print a summary table to the console
-
-### 4. Explore interactively
-Open `notebooks/01_end_to_end_walkthrough.ipynb` to run each step interactively and
-inspect intermediate results/plots.
+If successful, Python can locate the project package.
 
 ---
 
-## Processed Data (`data/processed/`)
+# 7. Running the Project
 
-Preprocessing is the slow part of this project (especially M5's wide-to-long melt
-and price merge) — training and exploring the data is what you actually do
-repeatedly. So `src/pipeline.py` automatically **caches** the output of
-preprocessing here every time it runs, instead of recomputing it every time:
+## 7.1 Run the Main Forecasting Pipeline
 
-```
-data/processed/
-├── {dataset}_train.npz              # X, y, sku arrays for the training split
-├── {dataset}_val.npz                # same, for validation
-├── {dataset}_test.npz                # same, for test
-└── {dataset}_cleaned_long.parquet   # cleaned long-format DataFrame (pre-windowing)
-                                       # -- this is what the EDA notebook loads
+Rossmann:
+
+```bash
+python -m src.pipeline --dataset rossmann
 ```
 
-To reload cached windows later without rerunning preprocessing:
-```python
-from src.preprocessing import load_processed_windows, load_processed_long_df
+M5:
 
-X_train, y_train, sku_train = load_processed_windows("rossmann", split="train")
-df = load_processed_long_df("rossmann")   # cleaned long-format, used for EDA/plotting
+```bash
+python -m src.pipeline --dataset m5
 ```
 
----
+The original pipeline is designed to:
 
-## Exploratory Data Analysis (`notebooks/00_eda.ipynb`)
+1. Load and preprocess data.
+2. Generate chronological train, validation and test splits.
+3. Train the forecasting model.
+4. Evaluate forecasting performance.
+5. Calculate prediction coverage.
+6. Run statistical diagnostics.
+7. Generate inventory recommendations.
+8. Save figures and experiment results.
 
-Run this **after** `python -m src.pipeline --dataset <name>` at least once, since
-it reads from `data/processed/{dataset}_cleaned_long.parquet`.
+The newly added v2 utilities require integration into the main pipeline before they are automatically executed by these commands.
 
-It covers, with saved plots in `reports/figures/`:
+## 7.2 Run Hyperparameter Search
 
-1. **Overview & missingness** — sanity-checks that `fill_missing()` actually left no gaps
-2. **Demand distribution** — histogram + skewness, showing *why* this project uses
-   quantile regression instead of assuming a Gaussian/MSE-style error
-3. **Time series trends** — raw demand plotted per sample SKU
-4. **Day-of-week seasonality** — boxplot of demand by weekday, motivating SARIMA's
-   `seasonal_order=(...,7)` choice in `src/baseline_sarima.py`
-5. **ACF / PACF plots** — statistically confirms weekly seasonality (a spike at
-   lag 7), rather than just eyeballing it
-6. **Promo / price effect** — checks whether the extra feature channels (`promo`
-   for Rossmann, `sell_price` for M5) actually correlate with demand
-7. **Intermittency check** — % of zero-demand days per SKU, another justification
-   for quantile regression over a Gaussian-assumption model
-
-Change `DATASET_NAME = 'rossmann'` to `'m5'` in the first code cell to explore
-the other dataset (assuming you've run the pipeline for it at least once too).
-
----
-
-## Experiments
-
-Beyond the main pipeline (one model, one train/val/test split), four experiment
-scripts answer specific questions a single run can't. All of them log their
-results to **`reports/experiment_log.csv`** via `src/experiment_log.py`, alongside
-every run of the main pipeline — so every run type (main pipeline, hyperparameter
-trial, ablation config, CV fold, segment analysis) ends up in one comparable table
-instead of scattered console output that disappears.
-
-### Hyperparameter comparison
 ```bash
 python -m src.experiments.hyperparam_search --dataset rossmann
 ```
-Trains across a small grid of `hidden_size x input_window` combinations and
-ranks them by pinball loss (not MAE/RMSE — pinball loss evaluates the whole
-predicted distribution, which is the right metric for a quantile model; see
-FR-5.1 in `docs/SRS.md`). Deliberately a small grid (3x2), not an exhaustive
-search — the point is showing a search space was considered and compared
-fairly, not running an expensive tuning job. Saves a heatmap to
-`reports/figures/hyperparam_search_heatmap.png`.
 
-### Feature ablation study
+Compares different model configurations.
+
+## 7.3 Run Feature Ablation
+
 ```bash
 python -m src.experiments.ablation_study --dataset rossmann
 ```
-Trains the identical model twice — once with only the target channel, once
-with the full extra-feature set (`sell_price` for M5; `promo`,
-`competition_distance`, etc. for Rossmann) — and reports whether those
-features actually improved pinball loss. Answers "did the features I added
-actually help," honestly, rather than assuming they did because they were
-added. Saves a comparison chart to `reports/figures/ablation_comparison.png`.
 
-### Rolling-origin cross-validation
+Evaluates the contribution of additional input features.
+
+## 7.4 Run Rolling-Origin Cross-Validation
+
 ```bash
 python -m src.experiments.rolling_cv --dataset rossmann --n_folds 3
 ```
-A single train/val/test split only tells you how the model did on ONE test
-period, which could have been unusually easy or hard by chance. This expands
-the training window forward across several folds (walk-forward validation —
-the time-series-safe alternative to random k-fold CV, which would leak future
-data into training) and reports the mean **and standard deviation** of pinball
-loss across folds. A high std means performance is unstable across time
-periods — worth knowing before trusting a single split's result. Saves a
-per-fold chart to `reports/figures/rolling_cv_folds.png`.
 
-### Per-SKU segmentation
+Evaluates forecasting performance across multiple chronological folds.
+
+## 7.5 Run Demand Segmentation
+
 ```bash
 python -m src.experiments.segment_analysis --dataset rossmann
 ```
-A single blended pinball loss across all SKUs can hide very different
-behavior for different types of series. This buckets SKUs into low/medium/high
-volume tertiles (by total historical demand) and reports pinball loss, MAE,
-and coverage **per bucket** — typically revealing that the model performs
-worse on low-volume, intermittent SKUs than on high-volume ones, which the
-blended average alone would hide. Saves a comparison chart to
-`reports/figures/segment_analysis_comparison.png`.
 
-### Advanced analysis (uncertainty, structural breaks, reconciliation)
+Evaluates performance across low-, medium- and high-volume demand segments.
+
+## 7.6 Run Advanced Analysis
+
 ```bash
 python -m src.experiments.advanced_analysis --dataset rossmann
 ```
-Trains one model, then runs three deeper analyses on top of it:
 
-**1. Uncertainty decomposition** (`src/uncertainty_decomposition.py`) — splits
-total predictive uncertainty into **epistemic** (model uncertainty, reducible
-with more data) and **aleatoric** (inherent demand noise, not reducible) via
-Monte Carlo Dropout: dropout is normally OFF at inference, MC Dropout keeps
-it ON and runs ~20 stochastic forward passes per input, using the spread
-across passes as an epistemic-uncertainty estimate, and the model's own
-predicted quantile spread (P90−P10) as an aleatoric-uncertainty proxy. This
-is a well-established but *approximate* technique (Gal & Ghahramani, 2016),
-not a full Bayesian treatment — stated explicitly in the module docstring.
-Reveals whether forecast uncertainty is mostly "the model hasn't seen enough
-examples" vs. "this demand is just inherently noisy," which call for
-different responses. Saves `reports/figures/uncertainty_decomposition.png`.
+Runs the existing advanced analysis workflow for uncertainty decomposition, structural breaks and hierarchical reconciliation.
 
-**2. Structural break detection** (`src/structural_break_detection.py`) —
-runs two-sided CUSUM (cumulative sum) control-chart detection per SKU to
-find sustained regime shifts (e.g. a competitor opening, a permanent promo
-change). CUSUM parameters were empirically tuned (see module docstring) to
-give zero false positives on pure-noise series while detecting an injected
-shift with near-zero delay. If a break is found, retrains the model with
-pre-break data pruned and compares pinball loss against the unpruned model,
-reporting whether the older regime was adding noise or useful signal. Saves
-`reports/figures/regime_pruning_comparison.png` (only if at least one break
-was detected).
+---
 
-**3. Hierarchical reconciliation** (`src/hierarchical_reconciliation.py`) —
-takes each SKU's latest forecast plus an **independently fit** SARIMA model
-on the aggregated total demand (a genuinely separate model, not just a sum),
-then reconciles the two so they agree exactly. Implements the standard
-hierarchical reconciliation formula directly in numpy using a "structural
-scaling" (diagonal-weight) simplification of full MinT reconciliation —
-*note: there is no `statsmodels.tsa.forecasting.reconciliation` module, so
-this is implemented from the formula directly rather than depending on an
-API that doesn't exist*. Saves `reports/figures/reconciliation_comparison.png`.
+# 8. Automated Testing
 
-### Reviewing results
-```python
-from src.experiment_log import load_experiment_log
-df = load_experiment_log()
-df.sort_values("pinball_loss")
+The project includes original smoke tests and additional v2 regression tests.
+
+Test files:
+
+```text
+tests/
+├── test_smoke.py
+└── test_v2.py
 ```
-Or open `notebooks/02_experiment_results.ipynb` for a visual view of all of
-the above — it reloads every chart saved by the scripts above, plus one
-additional cross-experiment chart ranking all logged runs together.
+
+Run all tests:
+
+```bash
+python -m pytest -v
+```
+
+Run original tests:
+
+```bash
+python -m pytest tests/test_smoke.py -v
+```
+
+Run v2 tests:
+
+```bash
+python -m pytest tests/test_v2.py -v
+```
+
+The tests cover:
+
+- Quantile LSTM output shape.
+- Quantile monotonicity.
+- Pinball loss.
+- Empirical coverage.
+- Diebold-Mariano testing.
+- Ljung-Box diagnostics.
+- Newsvendor critical ratio.
+- Quantile interpolation.
+- Inventory simulation.
+- Conformal calibration.
+- Rolling-origin splitting.
+- Demand segmentation.
+- Monte Carlo Dropout.
+- Structural break detection.
+- Hierarchical reconciliation.
+
+Tests validate software behavior; passing tests alone do not establish scientific superiority or real-world inventory savings.
 
 ---
 
-## Design Notes (Why It's Kept Simple)
+# 9. Experiment Configuration
 
-- **One baseline (SARIMA), one DL model (LSTM).** No ensembles, no transformers — added
-  complexity would not add scientific value here.
-- **Quantile regression is the primary uncertainty method, not a full Bayesian model.**
-  Simpler to implement correctly, faster to train, and its output (quantiles) plugs
-  directly into the newsvendor formula with no extra distributional assumptions. MC
-  Dropout is used *in addition*, specifically in `src/uncertainty_decomposition.py`, to
-  answer a different question (epistemic vs. aleatoric uncertainty) that quantile
-  regression alone can't answer — it's an addition for a specific diagnostic purpose,
-  not a replacement for the main approach.
-- **Every statistical test used (ADF, Diebold-Mariano, Ljung-Box) is a standard, well-implemented
-  test in `statsmodels`/`scipy`.** No custom statistics were derived — the value is in choosing
-  the *correct* test for each specific claim, not in reinventing one.
-- **Hierarchical reconciliation uses a simplified "structural scaling" weight matrix,
-  not full MinT covariance estimation.** Full MinT needs substantial in-sample residual
-  history to estimate a full covariance matrix reliably; the diagonal approximation used
-  here is less statistically optimal but far more stable at this project's data scale,
-  while still guaranteeing the actual business requirement (forecasts sum consistently).
+Configuration file:
 
-See `docs/SRS.md`, Section 10, for the full reasoning behind each design decision.
+`configs/default.yaml`
+
+Example:
+
+```yaml
+project: probabilistic-demand-forecasting-v2
+
+seed: 42
+dataset: rossmann
+
+input_window: 28
+forecast_horizon: 7
+
+quantiles:
+  - 0.05
+  - 0.10
+  - 0.25
+  - 0.50
+  - 0.75
+  - 0.90
+  - 0.95
+
+training:
+  hidden_size: 64
+  epochs: 50
+  patience: 7
+  learning_rate: 0.001
+
+evaluation:
+  seeds: [11, 22, 33, 44, 55]
+  horizons: [1, 7, 14, 28]
+  origins: 4
+
+inventory:
+  holding_cost: 1.0
+  stockout_cost: 4.0
+  lead_time_days: 1
+```
+
+The configuration defines the intended experiment settings.
+
+The model and experiment runners must explicitly consume these values for the configuration to control execution.
 
 ---
 
-## Key Files to Read First
+# 10. Processed Data and Caching
 
-If you're reviewing this project (e.g., as an interviewer), read in this order:
-1. `docs/SRS.md` — full spec and reasoning
-2. `src/dl_model.py` — the core model and pinball loss implementation
-3. `src/statistical_tests.py` — DM test and Ljung-Box, with inline comments on *why* each is used
-4. `src/decision_newsvendor.py` — how the forecast becomes a business decision
-5. `src/uncertainty_decomposition.py`, `src/structural_break_detection.py`,
-   `src/hierarchical_reconciliation.py` — the three advanced analyses, each with an
-   explicit statement of what method/approximation is used and why
+The preprocessing pipeline uses `data/processed/` for generated datasets and cached features.
+
+Expected structure:
+
+```text
+data/processed/
+├── rossmann_train.npz
+├── rossmann_val.npz
+├── rossmann_test.npz
+└── rossmann_cleaned_long.parquet
+```
+
+The exact generated files depend on the dataset and preprocessing implementation.
+
+Processed files should not be committed unless needed for reproducibility or explicitly requested.
+
+---
+
+# 11. Experiment Results and Reporting
+
+Results are stored under:
+
+```text
+reports/
+├── figures/
+├── results.md
+└── experiment_log.csv
+```
+
+Important evaluation measures:
+
+| Metric | Purpose |
+|---|---|
+| Pinball Loss | Quantile forecast accuracy |
+| MAE | Absolute forecast error |
+| RMSSE | Scaled forecasting accuracy |
+| Interval Coverage | Prediction interval reliability |
+| Interval Score | Coverage and interval width |
+| DM Test | Statistical comparison of forecasts |
+| Total Inventory Cost | Financial inventory performance |
+| Fill Rate | Demand satisfaction |
+| Average Inventory | Inventory holding level |
+
+All model comparisons should use common evaluation periods and identical demand observations.
+
+No performance improvement, statistical significance or inventory savings should be claimed without actual experiment results.
+
+---
+
+# 12. Git and GitHub Development Workflow
+
+The v2 changes are organized into 12 feature-wise commits.
+
+| Commit | Feature |
+|---|---|
+| 1 | Rossmann and M5 preprocessing improvements |
+| 2 | Leakage-free feature scaling |
+| 3 | Quantile LSTM improvements |
+| 4 | Probabilistic evaluation metrics |
+| 5 | Forecasting baselines |
+| 6 | Statistical testing improvements |
+| 7 | Newsvendor inventory optimization |
+| 8 | Multi-period inventory simulation |
+| 9 | Conformal prediction calibration |
+| 10 | Smoke and regression tests |
+| 11 | Experiment configuration and CI |
+| 12 | README and reporting updates |
+
+Create a feature branch:
+
+```bash
+git checkout -b feature/probabilistic-forecasting-v2
+```
+
+Check changes:
+
+```bash
+git status
+```
+
+Create feature-wise commits:
+
+```bash
+git add src/
+git commit -m "Implement forecasting improvements"
+```
+
+Push the feature branch:
+
+```bash
+git push -u origin feature/probabilistic-forecasting-v2
+```
+
+Create a Pull Request into the existing `main` branch.
+
+The original Git history is preserved.
+
+---
+
+# 13. Continuous Integration
+
+GitHub Actions configuration:
+
+`.github/workflows/tests.yml`
+
+The intended workflow automatically:
+
+1. Checks out the repository.
+2. Sets up Python.
+3. Installs dependencies.
+4. Executes pytest.
+5. Reports test status.
+
+This helps detect regressions when new code is pushed or submitted through a pull request.
+
+---
+
+# 14. Known Limitations and Future Work
+
+The current v2 implementation adds core functionality, but the following research and engineering work remains:
+
+- Full fixed-origin orchestration across every model.
+- Complete LightGBM quantile benchmark.
+- Store and SKU learned embeddings.
+- Explicit closed-day loss masking.
+- Intermittent-demand hurdle or negative-binomial model.
+- Deep ensemble training.
+- Fully integrated five-seed and multi-horizon experiments.
+- Full hierarchical reconciliation experiments.
+- Structural-break false-positive analysis across real datasets.
+- End-to-end conformal calibration integration.
+- Complete inventory policy comparisons.
+- Interactive forecasting dashboard.
+- Inference API.
+- Production drift monitoring.
+
+These are future implementation and validation milestones, not completed features.
+
+---
+
+# 15. Research and Business Value
+
+The project connects machine learning with practical inventory management.
+
+Its main contribution is the use of probabilistic forecasting for decision-making under uncertainty.
+
+Expected research value:
+
+- Evaluation of quantile-based forecasting.
+- Comparison against statistical forecasting baselines.
+- Investigation of predictive uncertainty.
+- Statistical validation of forecast comparisons.
+- Calibration of prediction intervals.
+
+Expected business value:
+
+- Demand-aware inventory recommendations.
+- Explicit consideration of holding and stockout costs.
+- Lead-time-aware inventory simulation.
+- Measurement of service levels and inventory costs.
+- Better-informed ordering decisions.
+
+Actual financial improvements must be established through controlled experiments on held-out demand data.
+
+---
+
+# 16. Key Files to Read First
+
+For someone reviewing or evaluating the project:
+
+1. `docs/SRS.md` – Software requirements and design rationale.
+2. `src/dl_model.py` – Quantile LSTM implementation.
+3. `src/preprocessing.py` – Data preparation and feature processing.
+4. `src/metrics.py` – Probabilistic forecasting metrics.
+5. `src/statistical_tests.py` – Statistical model evaluation.
+6. `src/decision_newsvendor.py` – Inventory decision optimization.
+7. `src/inventory_simulation.py` – Inventory policy simulation.
+8. `src/conformal.py` – Prediction interval calibration.
+9. `src/uncertainty_decomposition.py` – Uncertainty analysis.
+10. `src/structural_break_detection.py` – Demand regime changes.
+11. `src/hierarchical_reconciliation.py` – Forecast reconciliation.
+12. `tests/` – Automated regression and functionality tests.
+
+---
+
+# 17. Final Project Goal
+
+The goal of this project is to move beyond point forecasting.
+
+It combines:
+
+**Demand Forecasting + Predictive Uncertainty + Statistical Validation + Inventory Optimization**
+
+The final objective is to demonstrate, through reproducible experiments, whether probabilistic demand forecasts can improve inventory decisions compared with conventional forecasting and ordering approaches.

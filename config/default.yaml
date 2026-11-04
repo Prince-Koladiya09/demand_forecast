@@ -1,0 +1,33 @@
+
+project: probabilistic-demand-forecasting-v2
+
+seed: 42
+dataset: rossmann
+
+input_window: 28
+forecast_horizon: 7
+
+quantiles:
+  - 0.05
+  - 0.10
+  - 0.25
+  - 0.50
+  - 0.75
+  - 0.90
+  - 0.95
+
+training:
+  hidden_size: 64
+  epochs: 50
+  patience: 7
+  learning_rate: 0.001
+
+evaluation:
+  seeds: [11, 22, 33, 44, 55]
+  horizons: [1, 7, 14, 28]
+  origins: 4
+
+inventory:
+  holding_cost: 1.0
+  stockout_cost: 4.0
+  lead_time_days: 1
